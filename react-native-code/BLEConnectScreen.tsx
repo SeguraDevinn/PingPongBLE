@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
@@ -10,30 +10,40 @@ import {
   StyleSheet,
   Dimensions,
 } from 'react-native';
-import {BleManager, Device} from 'react-native-ble-plx';
-import {Buffer} from 'buffer';
+import { BleManager, Device } from 'react-native-ble-plx';
+import { Buffer } from 'buffer';
 
+// Get screen width for layout calculations
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 const BLEConnectScreen = () => {
+  // -------------------------------
+  // BLE and Game State
+  // -------------------------------
   const [bleManager] = useState(() => new BleManager());
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]); // Discovered BLE devices
   const [connectedDevice1, setConnectedDevice1] = useState<Device | null>(null);
   const [connectedDevice2, setConnectedDevice2] = useState<Device | null>(null);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState<string[]>([]); // Debug log lines
   const [scanning, setScanning] = useState(false);
+  
+  // Game states: paddle positions, ball physics, score and game over flags
   const [paddleX1, setPaddleX1] = useState(SCREEN_WIDTH / 2 - 50);
   const [paddleX2, setPaddleX2] = useState(SCREEN_WIDTH / 2 - 50);
   const [ballX, setBallX] = useState(SCREEN_WIDTH / 2 - 10); // center horizontally
   const [ballY, setBallY] = useState(150); // starting Y position
-  const [ballVX, setBallVX] = useState(10); // velocity X
-  const [ballVY, setBallVY] = useState(10); // velocity Y
+  const [ballVX, setBallVX] = useState(10); // velocity in X direction
+  const [ballVY, setBallVY] = useState(10); // velocity in Y direction
   const [scorePlayer, setScorePlayer] = useState(0);
   const [scoreOpponent, setScoreOpponent] = useState(0);
   const [gameOver, setGameOver] = useState(false);
+  // Flags to track if each connected device has confirmed a "Play Again" request
   const [player1Ready, setPlayer1Ready] = useState(false);
   const [player2Ready, setPlayer2Ready] = useState(false);
 
+  // -------------------------------
+  // Request Permissions (Android)
+  // -------------------------------
   useEffect(() => {
     if (Platform.OS === 'android') {
       PermissionsAndroid.requestMultiple([
@@ -42,17 +52,23 @@ const BLEConnectScreen = () => {
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
       ]);
     }
-
+    // Cleanup BLE manager on unmount
     return () => {
       bleManager.destroy();
     };
   }, []);
 
+  // -------------------------------
+  // Logging Helper Function
+  // -------------------------------
   const log = (message: string) => {
     console.log(message);
     setLogs(prev => [message, ...prev.slice(0, 30)]);
   };
 
+  // -------------------------------
+  // BLE Device Scanning
+  // -------------------------------
   const scanForDevices = () => {
     setDevices([]);
     setLogs([]);
@@ -65,10 +81,9 @@ const BLEConnectScreen = () => {
         setScanning(false);
         return;
       }
-
+      // If device has a name, add to list
       if (scannedDevice?.name) {
         log(`📡 Found: ${scannedDevice.name} (${scannedDevice.id})`);
-
         setDevices(prev => {
           const exists = prev.find(d => d.id === scannedDevice.id);
           return exists ? prev : [...prev, scannedDevice];
@@ -83,17 +98,21 @@ const BLEConnectScreen = () => {
     }, 10000);
   };
 
+  // -------------------------------
+  // Connect to a Selected Device
+  // -------------------------------
   const connectToDevice = async (device: Device) => {
     try {
       const connected = await device.connect();
       await connected.discoverAllServicesAndCharacteristics();
       log(`✅ Connected to: ${connected.name}`);
 
+      // Assign device to player slots (ensure no duplicate)
       if (!connectedDevice1) {
         setConnectedDevice1(connected);
         monitorDevice(connected, updatePaddle1);
       } else if (
-        connectedDevice1.id !== connected.id && //  make sure it's not already device 1
+        connectedDevice1.id !== connected.id &&
         !connectedDevice2
       ) {
         setConnectedDevice2(connected);
@@ -106,9 +125,12 @@ const BLEConnectScreen = () => {
     }
   };
 
+  // -------------------------------
+  // Send GAME_OVER Command to Devices
+  // -------------------------------
+  // Called when either player reaches 5 points.
   const sendGameOverToDevices = async () => {
     const message = Buffer.from("GAME_OVER").toString('base64');
-  
     try {
       if (connectedDevice1) {
         await connectedDevice1.writeCharacteristicWithResponseForService(
@@ -118,7 +140,6 @@ const BLEConnectScreen = () => {
         );
         log("📤 Sent GAME_OVER to Device 1");
       }
-  
       if (connectedDevice2) {
         await connectedDevice2.writeCharacteristicWithResponseForService(
           '47b225e3-f89c-4885-8068-f64092c1b640',
@@ -127,11 +148,14 @@ const BLEConnectScreen = () => {
         );
         log("📤 Sent GAME_OVER to Device 2");
       }
-    } catch (err) {
+    } catch (err: any) {
       log(`❌ Failed to send GAME_OVER: ${err.message}`);
     }
   };
 
+  // -------------------------------
+  // Reset Game State
+  // -------------------------------
   const resetGame = () => {
     setScorePlayer(0);
     setScoreOpponent(0);
@@ -140,8 +164,13 @@ const BLEConnectScreen = () => {
     setPlayer2Ready(false);
     resetBall('down');
   };
-  
 
+  // -------------------------------
+  // Monitor a Connected Device for BLE Data
+  // -------------------------------
+  // This function listens to incoming BLE messages from a device,
+  // updates the corresponding paddle via paddleUpdater, and checks
+  // for confirmation messages ("CONFIRM" or "PLAY_AGAIN").
   const monitorDevice = (
     device: Device,
     paddleUpdater: (accX: number) => void,
@@ -154,11 +183,11 @@ const BLEConnectScreen = () => {
           log(`💥 BLE Error from ${device.name}: ${error.message}`);
           return;
         }
-  
         if (characteristic?.value) {
           const decoded = Buffer.from(characteristic.value, 'base64').toString('utf-8');
           log(`📥 ${device.name} sent: ${decoded}`);
-  
+
+          // Check for confirmation messages from M5Core devices
           if (decoded.includes("CONFIRM") || decoded.includes("PLAY_AGAIN")) {
             if (device.id === connectedDevice1?.id) {
               setPlayer1Ready(true);
@@ -167,7 +196,8 @@ const BLEConnectScreen = () => {
             }
             return;
           }
-  
+
+          // Extract motion data (assumes format "X=...") and update paddle position
           const match = decoded.match(/X=([-0-9.]+)/);
           if (match) {
             const accX = parseFloat(match[1]);
@@ -177,7 +207,11 @@ const BLEConnectScreen = () => {
       },
     );
   };
-  
+
+  // -------------------------------
+  // Paddle Updaters
+  // -------------------------------
+  // Each device controls its paddle by sending an acceleration in X.
   const updatePaddle1 = (accX: number) => {
     setPaddleX1(prev => {
       let newX = prev + accX * 2;
@@ -194,6 +228,10 @@ const BLEConnectScreen = () => {
     });
   };
 
+  // -------------------------------
+  // Reset Ball Position and Velocity
+  // -------------------------------
+  // Called after a score or when resetting the game.
   const resetBall = (direction: 'up' | 'down') => {
     setBallX(SCREEN_WIDTH / 2 - 10);
     setBallY(150);
@@ -201,26 +239,32 @@ const BLEConnectScreen = () => {
     setBallVY(direction === 'up' ? -8 : 8);
   };
 
+  // -------------------------------
+  // Game Physics: Ball Movement and Collision
+  // -------------------------------
   useEffect(() => {
     const interval = setInterval(() => {
+      // Update ball's X position
       setBallX(prevX => {
         const nextX = prevX + ballVX;
+        // Bounce off left/right walls
         if (nextX <= 0 || nextX >= SCREEN_WIDTH - 20) {
-          setBallVX(vx => -vx); // bounce off left/right
+          setBallVX(vx => -vx);
         }
         return nextX;
       });
 
+      // Update ball's Y position and check for collisions and scoring
       setBallY(prevY => {
         const nextY = prevY + ballVY;
         const screenHeight = Dimensions.get('window').height;
 
         const ballTop = nextY;
         const ballBottom = nextY + 20;
-        const paddleBottomY = 70;
-        const paddleTopY = screenHeight - 70;
+        const paddleBottomY = 70;            // Top paddle's Y coordinate (opponent)
+        const paddleTopY = screenHeight - 70;  // Bottom paddle's Y coordinate (player)
 
-        // 🏓 Bounce off bottom paddle
+        // Bounce off bottom paddle (player)
         if (
           ballBottom >= paddleTopY &&
           ballTop <= paddleTopY + 20 &&
@@ -231,7 +275,7 @@ const BLEConnectScreen = () => {
           return prevY + -ballVY;
         }
 
-        // 🏓 Bounce off top paddle
+        // Bounce off top paddle (opponent)
         if (
           ballTop <= paddleBottomY + 20 &&
           ballBottom >= paddleBottomY &&
@@ -242,13 +286,13 @@ const BLEConnectScreen = () => {
           return prevY + -ballVY;
         }
 
-        // ❌ Missed bottom → opponent scores
+        // Missed bottom paddle: Opponent scores
         if (nextY >= screenHeight - 20) {
           setScoreOpponent(s => {
             const newScore = s + 1;
             if (newScore >= 5) {
               setGameOver(true);
-              sendGameOverToDevices(); 
+              sendGameOverToDevices(); // Notify devices of game over
             }
             return newScore;
           });
@@ -256,13 +300,13 @@ const BLEConnectScreen = () => {
           return 150;
         }
 
-        // ❌ Missed top → player scores
+        // Missed top paddle: Player scores
         if (nextY <= 0) {
           setScorePlayer(s => {
             const newScore = s + 1;
             if (newScore >= 5) {
               setGameOver(true);
-              sendGameOverToDevices(); 
+              sendGameOverToDevices(); // Notify devices of game over
             }
             return newScore;
           });
@@ -272,14 +316,14 @@ const BLEConnectScreen = () => {
 
         return nextY;
       });
-    }, 16); // 60fps
+    }, 16); // ~60fps
 
     return () => clearInterval(interval);
   }, [ballVX, ballVY, paddleX1, paddleX2, ballX]);
 
-  // -----------------------------------
-  // UI: Disconnected = scan/connect view
-  // -----------------------------------
+  // -------------------------------
+  // UI: When Not All Devices are Connected (Scan View)
+  // -------------------------------
   if (!connectedDevice1 || !connectedDevice2) {
     return (
       <View style={styles.container}>
@@ -293,7 +337,7 @@ const BLEConnectScreen = () => {
         <FlatList
           data={devices}
           keyExtractor={item => item.id}
-          renderItem={({item}) => (
+          renderItem={({ item }) => (
             <Button
               title={`Connect to ${item.name}`}
               onPress={() => connectToDevice(item)}
@@ -312,14 +356,14 @@ const BLEConnectScreen = () => {
     );
   }
 
-  // -----------------------------------
-  // UI: Connected = paddle screen
-  // -----------------------------------
+  // -------------------------------
+  // UI: Game Over Screen
+  // -------------------------------
   if (gameOver) {
+    // If both devices have confirmed "PLAY_AGAIN", reset the game
     if (player1Ready && player2Ready) {
-      resetGame(); // Automatically reset once both confirmed
+      resetGame();
     }
-  
     return (
       <View style={styles.gameOverContainer}>
         <Text style={styles.gameOverText}>🎉 Game Over!!!</Text>
@@ -338,34 +382,60 @@ const BLEConnectScreen = () => {
       </View>
     );
   }
-  
+
+  // -------------------------------
+  // UI: Main Game Screen (When Both Devices are Connected)
+  // -------------------------------
   return (
     <View style={styles.gameContainer}>
+      {/* Scoreboard */}
       <View style={styles.scoreContainer}>
         <Text style={styles.scoreText}>Player: {scorePlayer}</Text>
         <Text style={styles.scoreText}>Opponent: {scoreOpponent}</Text>
       </View>
-      {/* Center line */}
+      {/* Center Line */}
       <View style={styles.centerLine} />
 
-      {/* Opponent paddle */}
-      <View style={[styles.opponentPaddle, {left: paddleX2}]} />
+      {/* Opponent Paddle (Top) */}
+      <View style={[styles.opponentPaddle, { left: paddleX2 }]} />
 
-      {/* Player paddle */}
-      <View style={[styles.paddle, {left: paddleX1}]} />
+      {/* Player Paddle (Bottom) */}
+      <View style={[styles.paddle, { left: paddleX1 }]} />
 
       {/* Ball */}
-      <View style={[styles.ball, {left: ballX, top: ballY}]} />
+      <View style={[styles.ball, { left: ballX, top: ballY }]} />
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {flex: 1, padding: 20, backgroundColor: '#111'},
-  title: {fontSize: 22, fontWeight: 'bold', color: 'white', marginBottom: 10},
-  subtitle: {color: '#ccc', marginTop: 10},
-  logBox: {maxHeight: 200, backgroundColor: '#222', marginTop: 10, padding: 10},
-  logLine: {color: '#0f0', fontSize: 12},
+  // Scan screen styles
+  container: {
+    flex: 1,
+    padding: 20,
+    backgroundColor: '#111',
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: 'white',
+    marginBottom: 10,
+  },
+  subtitle: {
+    color: '#ccc',
+    marginTop: 10,
+  },
+  logBox: {
+    maxHeight: 200,
+    backgroundColor: '#222',
+    marginTop: 10,
+    padding: 10,
+  },
+  logLine: {
+    color: '#0f0',
+    fontSize: 12,
+  },
+  // Game screen styles
   gameContainer: {
     flex: 1,
     backgroundColor: 'black',
@@ -389,7 +459,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#555',
     top: '50%',
   },
-
   opponentPaddle: {
     position: 'absolute',
     top: 50,
@@ -398,7 +467,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'red',
     borderRadius: 10,
   },
-
   ball: {
     position: 'absolute',
     width: 20,
@@ -420,6 +488,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
   },
+  // Game Over screen styles
   gameOverContainer: {
     flex: 1,
     backgroundColor: 'black',
